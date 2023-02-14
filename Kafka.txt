@@ -1,0 +1,82 @@
+import org.apache.kafka.clients.consumer.*;
+import org.apache.kafka.common.TopicPartition;
+
+import java.util.*;
+import java.util.concurrent.*;
+
+public class KafkaBatchConsumer {
+    
+    private static final int NUM_THREADS = 5;
+    private static final int BATCH_SIZE = 100;
+    private static final String TOPIC_NAME = "my-topic";
+    
+    public static void main(String[] args) {
+        Properties props = new Properties();
+        props.put("bootstrap.servers", "localhost:9092");
+        props.put("group.id", "my-group");
+        props.put("enable.auto.commit", "true");
+        props.put("auto.commit.interval.ms", "1000");
+        props.put("key.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
+        props.put("value.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
+
+        KafkaConsumer<String, String> consumer = new KafkaConsumer<>(props);
+        consumer.subscribe(Collections.singleton(TOPIC_NAME));
+
+        ExecutorService executor = Executors.newFixedThreadPool(NUM_THREADS);
+        
+        while (true) {
+            ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(100));
+            if (records.isEmpty()) {
+                continue;
+            }
+            List<Future<?>> futures = new ArrayList<>();
+            for (TopicPartition partition : records.partitions()) {
+                List<ConsumerRecord<String, String>> partitionRecords = records.records(partition);
+                for (int i = 0; i < partitionRecords.size(); i += BATCH_SIZE) {
+                    List<ConsumerRecord<String, String>> batch = partitionRecords.subList(i, Math.min(i + BATCH_SIZE, partitionRecords.size()));
+                    futures.add(executor.submit(() -> processRecords(batch)));
+                }
+            }
+            for (Future<?> future : futures) {
+                try {
+                    future.get();
+                } catch (InterruptedException | ExecutionException e) {
+                    e.printStackTrace();
+                }
+            }
+        }
+    }
+
+    private static void processRecords(List<ConsumerRecord<String, String>> records) {
+        for (ConsumerRecord<String, String> record : records) {
+            System.out.println(record.key() + ": " + record.value());
+        }
+    }
+}
+
+
+-------------------------------------------------------------------
+
+private static void processRecords(List<ConsumerRecord<String, String>> records) {
+    MongoClient mongoClient = new MongoClient("localhost", 27017);
+    MongoDatabase database = mongoClient.getDatabase("mydb");
+    MongoCollection<Document> collection = database.getCollection("mycollection");
+    List<Document> documents = new ArrayList<>();
+    for (ConsumerRecord<String, String> record : records) {
+        documents.add(Document.parse(record.value()));
+    }
+    ExecutorService executor = Executors.newFixedThreadPool(NUM_THREADS);
+    List<Future<?>> futures = new ArrayList<>();
+    for (int i = 0; i < documents.size(); i += BATCH_SIZE) {
+        List<Document> batch = documents.subList(i, Math.min(i + BATCH_SIZE, documents.size()));
+        futures.add(executor.submit(() -> collection.insertMany(batch)));
+    }
+    for (Future<?> future : futures) {
+        try {
+            future.get();
+        } catch (InterruptedException | ExecutionException e) {
+            e.printStackTrace();
+        }
+    }
+    mongoClient.close();
+}
