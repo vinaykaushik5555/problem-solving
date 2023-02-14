@@ -1,0 +1,79 @@
+import org.apache.kafka.clients.consumer.*;
+import org.apache.kafka.common.TopicPartition;
+
+import java.util.*;
+import java.util.concurrent.*;
+import com.mongodb.MongoClient;
+import com.mongodb.client.*;
+import org.bson.*;
+
+public class KafkaBatchConsumer {
+    
+    private static final int NUM_THREADS = 5;
+    private static final int BATCH_SIZE = 10000;
+    private static final String TOPIC_NAME = "my-topic";
+    private static final int PARTITION = 0;
+    private static final long START_OFFSET = 42;
+    private static final long END_OFFSET = 1000000;
+
+    public static void main(String[] args) {
+        ExecutorService executor = Executors.newFixedThreadPool(NUM_THREADS);
+        long nextOffset = START_OFFSET;
+        while (nextOffset <= END_OFFSET) {
+            List<ConsumerRecord<String, String>> records = readRecordsFromKafka(nextOffset, END_OFFSET, BATCH_SIZE);
+            if (records.isEmpty()) {
+                continue;
+            }
+            List<Future<?>> futures = new ArrayList<>();
+            for (int i = 0; i < records.size(); i += BATCH_SIZE) {
+                List<ConsumerRecord<String, String>> batch = records.subList(i, Math.min(i + BATCH_SIZE, records.size()));
+                futures.add(executor.submit(() -> processRecords(batch)));
+            }
+            for (Future<?> future : futures) {
+                try {
+                    future.get();
+                } catch (InterruptedException | ExecutionException e) {
+                    e.printStackTrace();
+                }
+            }
+            nextOffset = records.get(records.size() - 1).offset() + 1;
+        }
+    }
+
+    private static List<ConsumerRecord<String, String>> readRecordsFromKafka(long startOffset, long endOffset, int batchSize) {
+        Properties props = new Properties();
+        props.put("bootstrap.servers", "localhost:9092");
+        props.put("group.id", "my-group");
+        props.put("enable.auto.commit", "true");
+        props.put("auto.commit.interval.ms", "1000");
+        props.put("key.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
+        props.put("value.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
+
+        KafkaConsumer<String, String> consumer = new KafkaConsumer<>(props);
+        consumer.subscribe(Collections.singleton(TOPIC_NAME));
+        consumer.poll(Duration.ZERO); // Ensure consumer is assigned partitions
+        consumer.seek(new TopicPartition(TOPIC_NAME, PARTITION), startOffset);
+
+        List<ConsumerRecord<String, String>> records = new ArrayList<>();
+        while (records.size() < batchSize && startOffset <= endOffset) {
+            ConsumerRecords<String, String> consumerRecords = consumer.poll(Duration.ofMillis(100));
+            for (TopicPartition partition : consumerRecords.partitions()) {
+                if (partition.partition() != PARTITION) {
+                    continue;
+                }
+                for (ConsumerRecord<String, String> record : consumerRecords.records(partition)) {
+                    if (record.offset() < startOffset) {
+                        continue;
+                    }
+                    if (record.offset() > endOffset) {
+                        break;
+                    }
+                    records.add(record);
+                }
+            }
+        }
+        consumer.close();
+        return records;
+    }
+
+   
